@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CNC 轉速進給計算與刀具庫</title>
+  <style>
+    :root {
+      --primary: #1e3a8a;
+      --secondary: #2563eb;
+      --accent: #d97706;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --border: #cbd5e1;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 0; background-color: var(--bg); color: var(--text); padding-bottom: 70px; }
+    
+    /* Header */
+    header { background-color: var(--primary); color: white; padding: 15px; text-align: center; font-size: 1.2rem; font-weight: bold; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+    
+    /* Container */
+    .container { max-width: 600px; margin: 0 auto; padding: 15px; }
+    
+    /* Card */
+    .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
+    .card-title { font-size: 1.1rem; font-weight: bold; color: var(--primary); margin-bottom: 12px; border-bottom: 2px solid var(--primary); padding-bottom: 5px; }
+
+    /* Form Elements */
+    .form-group { margin-bottom: 12px; }
+    label { display: block; font-weight: bold; margin-bottom: 4px; font-size: 0.95rem; }
+    .hint { font-size: 0.8rem; color: #64748b; margin-top: 2px; }
+    select, input { width: 100%; padding: 10px; font-size: 1rem; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+    select:focus, input:focus { outline: none; border-color: var(--secondary); box-shadow: 0 0 0 3px rgba(37,99,235,0.2); }
+
+    /* Buttons */
+    .btn { display: inline-block; width: 100%; padding: 12px; background: var(--secondary); color: white; font-size: 1rem; font-weight: bold; text-align: center; border: none; border-radius: 8px; cursor: pointer; }
+    .btn:active { opacity: 0.9; }
+    .btn-accent { background: var(--accent); }
+    .btn-danger { background: #ef4444; }
+    .btn-group { display: flex; gap: 8px; margin-top: 10px; }
+
+    /* Results Box */
+    .result-box { background: #eff6ff; border: 2px solid var(--secondary); border-radius: 10px; padding: 15px; text-align: center; margin-top: 15px; }
+    .result-val { font-size: 1.8rem; font-weight: 800; color: #1e40af; margin: 5px 0; }
+    .result-label { font-size: 0.9rem; color: #475569; }
+
+    /* Navigation Bar */
+    .nav-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; display: flex; border-top: 1px solid var(--border); box-shadow: 0 -2px 5px rgba(0,0,0,0.05); z-index: 100; }
+    .nav-item { flex: 1; padding: 12px 0; text-align: center; font-size: 0.9rem; font-weight: bold; color: #64748b; cursor: pointer; }
+    .nav-item.active { color: var(--secondary); border-top: 3px solid var(--secondary); background: #f1f5f9; }
+
+    /* Tool List */
+    .tool-item { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+    .tool-header { display: flex; justify-content: space-between; font-weight: bold; color: var(--primary); font-size: 1.05rem; }
+    .tool-detail { font-size: 0.85rem; color: #475569; margin-top: 5px; line-height: 1.4; }
+
+    /* Tab Views */
+    .view { display: none; }
+    .view.active { display: block; }
+  </style>
+</head>
+<body>
+
+  <header>銑床切削參數速算與刀具庫</header>
+
+  <div class="container">
+    
+    <div id="calc-view" class="view active">
+      <div class="card">
+        <div class="card-title">1. 加工模式與刀具選擇</div>
+        
+        <div class="form-group">
+          <label>加工類型</label>
+          <select id="proc-type" onchange="onProcChange()">
+            <option value="mill">端銑 / 面銑 (側面或開槽)</option>
+            <option value="drill">鑽孔 (一般鑽頭)</option>
+            <option value="tap">攻牙 (絲攻機加工)</option>
+          </select>
+          <div class="hint">白話：銑削看每刃進給，鑽攻看每轉進給/螺距</div>
+        </div>
+
+        <div class="form-group">
+          <label>快選部門常用刀具 (可選)</label>
+          <select id="preset-tool" onchange="applyPresetTool()">
+            <option value="">-- 手動輸入或選擇常用刀具 --</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>被加工材質</label>
+          <select id="material-type" onchange="applyMaterialVc()">
+            <option value="steel">一般鋼材 (S45C/SS400 - 好切普通)</option>
+            <option value="alloy">合金鋼/模具鋼 (P20/NAK80 - 硬度較高)</option>
+            <option value="inox">不鏽鋼 (SUS304/316/17-4 - 黏刀、散熱差)</option>
+            <option value="alu">鋁合金 (6061/7075 - 切削快、容易積屑)</option>
+            <option value="ti">鈦合金/耐熱合金 (極難切、易發熱)</option>
+            <option value="copper">銅 / 塑膠 (好切、注意排屑)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">2. 切削條件設定</div>
+        
+        <div class="form-group">
+          <label>刀具外徑 D (mm)</label>
+          <input type="number" id="tool-d" value="10" step="0.1" oninput="calculate()">
+        </div>
+
+        <div id="flute-group" class="form-group">
+          <label>刀具刃數 Z (刃)</label>
+          <input type="number" id="tool-z" value="4" step="1" oninput="calculate()">
+          <div class="hint">白話：刀子有幾刃，銑刀通常2刃或4刃</div>
+        </div>
+
+        <div class="form-group">
+          <label>切削速度 Vc (m/min)</label>
+          <input type="number" id="tool-vc" value="120" step="1" oninput="calculate()">
+          <div class="hint" id="vc-hint">白話：刀具轉一圈塗開的長度。太高刀具燒掉，太低效率差。</div>
+        </div>
+
+        <div class="form-group" id="feed-param-group">
+          <label id="feed-label">每刃進給量 fz (mm/t)</label>
+          <input type="number" id="tool-f" value="0.05" step="0.001" oninput="calculate()">
+          <div class="hint" id="feed-hint">白話：一刀切下去咬多少肉。太大崩刃，太小磨損快。</div>
+        </div>
+      </div>
+
+      <div class="result-box">
+        <div class="result-label">主軸轉速 (S)</div>
+        <div class="result-val" id="res-rpm">0 <span style="font-size:1rem">RPM</span></div>
+        <div style="margin: 10px 0; border-top: 1px dashed #cbd5e1;"></div>
+        <div class="result-label">進給速度 (F)</div>
+        <div class="result-val" id="res-feed" style="color:#059669">0 <span style="font-size:1rem">mm/min</span></div>
+      </div>
+
+      <div class="card" style="margin-top: 15px;">
+        <div class="card-title">💡 現場吃刀深度建議 (參考值)</div>
+        <div id="depth-advice" style="font-size:0.95rem; line-height:1.5; color:#334155;">
+          選取材質與刀具後將自動提供切深建議。
+        </div>
+      </div>
+    </div>
+
+    <div id="library-view" class="view">
+      <div class="card">
+        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>部門刀具檔案庫</span>
+          <button class="btn btn-accent" style="width:auto; padding:5px 10px; font-size:0.85rem;" onclick="showAddToolForm()">+ 新建刀具</button>
+        </div>
+        
+        <div class="form-group">
+          <label>按刀具類型篩選</label>
+          <select id="lib-filter" onchange="renderToolList()">
+            <option value="all">全部類型</option>
+            <option value="endmill">端銑刀</option>
+            <option value="facemill">面銑刀</option>
+            <option value="drill">鑽頭</option>
+            <option value="tap">絲攻 (攻牙)</option>
+          </select>
+        </div>
+
+        <div id="tool-list">
+          </div>
+      </div>
+    </div>
+
+    <div id="add-view" class="view">
+      <div class="card">
+        <div class="card-title">新增/修改刀具資料</div>
+        
+        <div class="form-group">
+          <label>刀具分類</label>
+          <select id="new-type">
+            <option value="endmill">端銑刀</option>
+            <option value="facemill">面銑刀</option>
+            <option value="drill">鑽頭</option>
+            <option value="tap">絲攻 (攻牙)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>刀具名稱 / 規格廠牌</label>
+          <input type="text" id="new-name" placeholder="例：NACHI 10mm 4刃平銑刀">
+        </div>
+
+        <div class="form-group">
+          <label>刀具外徑 D (mm)</label>
+          <input type="number" id="new-d" step="0.1">
+        </div>
+
+        <div class="form-group">
+          <label>刃數 Z (鑽頭填1, 絲攻填1或螺距)</label>
+          <input type="number" id="new-z" value="4">
+        </div>
+
+        <div class="form-group">
+          <label>預設建議切速 Vc (m/min)</label>
+          <input type="number" id="new-vc">
+        </div>
+
+        <div class="form-group">
+          <label>預設每刃/每轉進給 (mm)</label>
+          <input type="number" id="new-f" step="0.001">
+        </div>
+
+        <div class="form-group">
+          <label>建議軸向切深 ap (mm) [白話：下刀深度]</label>
+          <input type="number" id="new-ap" step="0.1" placeholder="例：1.0D 或 5mm">
+        </div>
+
+        <div class="form-group">
+          <label>建議徑向切深 ae (mm) [白話：吃刀寬度]</label>
+          <input type="number" id="new-ae" step="0.1" placeholder="例：0.5D 或 2mm">
+        </div>
+
+        <div class="btn-group">
+          <button class="btn" onclick="saveNewTool()">儲存並加入刀具庫</button>
+          <button class="btn btn-danger" onclick="switchTab('library-view')">取消</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="nav-bar">
+    <div class="nav-item active" id="nav-calc" onclick="switchTab('calc-view')">🧮 參數計算</div>
+    <div class="nav-item" id="nav-lib" onclick="switchTab('library-view')">🛠️ 部門刀具庫</div>
+  </div>
+
+  <script>
+    // 預設預設資料 (初始化部門刀具庫)
+    const defaultTools = [
+      { id: 1, name: "10mm 4刃鎢鋼平銑刀 (通用型)", type: "endmill", d: 10, z: 4, vc: 120, f: 0.04, ap: "1.0 D (10mm)", ae: "0.2 D (2mm)" },
+      { id: 2, name: "50mm 4刃面銑刀盤 (鋁合金高切速)", type: "facemill", d: 50, z: 4, vc: 600, f: 0.12, ap: "1.5 mm", ae: "35 mm" },
+      { id: 3, name: "8.5mm SUS專用鑽頭 (打M10底孔)", type: "drill", d: 8.5, z: 1, vc: 25, f: 0.12, ap: "貫穿", ae: "全刃" },
+      { id: 4, name: "M10x1.5 擠壓絲攻", type: "tap", d: 10, z: 1.5, vc: 12, f: 1.5, ap: "15 mm", ae: "--" }
+    ];
+
+    // 初始化 LocalStorage 模擬部門共用資料庫
+    let toolDatabase = JSON.parse(localStorage.getItem('cnc_tools')) || defaultTools;
+
+    function saveToStorage() {
+      localStorage.setItem('cnc_tools', JSON.stringify(toolDatabase));
+      populatePresetDropdown();
+    }
+
+    // 頁籤切換
+    function switchTab(tabId) {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      
+      document.getElementById(tabId).classList.add('active');
+      if(tabId === 'calc-view') {
+        document.getElementById('nav-calc').classList.add('active');
+      } else if(tabId === 'library-view' || tabId === 'add-view') {
+        document.getElementById('nav-lib').classList.add('active');
+        renderToolList();
+      }
+    }
+
+    // 加工模式變更
+    function onProcChange() {
+      const type = document.getElementById('proc-type').value;
+      const fluteGroup = document.getElementById('flute-group');
+      const feedLabel = document.getElementById('feed-label');
+      const feedHint = document.getElementById('feed-hint');
+
+      if(type === 'mill') {
+        fluteGroup.style.display = 'block';
+        feedLabel.innerText = '每刃進給量 fz (mm/t)';
+        feedHint.innerText = '白話：一刃切下去咬多少肉。';
+      } else if(type === 'drill') {
+        fluteGroup.style.display = 'none';
+        feedLabel.innerText = '每轉進給量 f (mm/rev)';
+        feedHint.innerText = '白話：主軸轉一圈，鑽頭往下進給幾 mm。';
+      } else if(type === 'tap') {
+        fluteGroup.style.display = 'none';
+        feedLabel.innerText = '螺距 P (mm/pitch)';
+        feedHint.innerText = '白話：螺絲牙距，例如 M10x1.5 螺距就是 1.5。';
+      }
+      calculate();
+    }
+
+    // 依材質帶入建議 Vc 基準
+    function applyMaterialVc() {
+      const mat = document.getElementById('material-type').value;
+      const vcInput = document.getElementById('tool-vc');
+      
+      const vcDefaults = {
+        steel: 120,
+        alloy: 80,
+        inox: 50,
+        alu: 400,
+        ti: 35,
+        copper: 200
+      };
+
+      if(vcDefaults[mat]) {
+        vcInput.value = vcDefaults[mat];
+      }
+      calculate();
+    }
+
+    // 核心計算公式
+    function calculate() {
+      const type = document.getElementById('proc-type').value;
+      const d = parseFloat(document.getElementById('tool-d').value) || 0;
+      const z = parseFloat(document.getElementById('tool-z').value) || 1;
+      const vc = parseFloat(document.getElementById('tool-vc').value) || 0;
+      const f = parseFloat(document.getElementById('tool-f').value) || 0;
+
+      if (d <= 0 || vc <= 0) {
+        document.getElementById('res-rpm').innerText = '0 RPM';
+        document.getElementById('res-feed').innerText = '0 mm/min';
+        return;
+      }
+
+      // 1. 計算 RPM = (1000 * Vc) / (π * D)
+      const rpm = Math.round((1000 * vc) / (Math.PI * d));
+
+      // 2. 計算 Feed (F)
+      let feed = 0;
+      if (type === 'mill') {
+        // F = RPM * Z * fz
+        feed = Math.round(rpm * z * f);
+      } else if (type === 'drill') {
+        // F = RPM * f
+        feed = Math.round(rpm * f);
+      } else if (type === 'tap') {
+        // F = RPM * Pitch
+        feed = Math.round(rpm * f);
+      }
+
+      document.getElementById('res-rpm').innerHTML = `${rpm.toLocaleString()} <span style="font-size:1rem">RPM</span>`;
+      document.getElementById('res-feed').innerHTML = `${feed.toLocaleString()} <span style="font-size:1rem">mm/min</span>`;
+
+      updateDepthAdvice(d);
+    }
+
+    // 動態切深提示白話文
+    function updateDepthAdvice(d) {
+      const type = document.getElementById('proc-type').value;
+      const mat = document.getElementById('material-type').value;
+      const adviceBox = document.getElementById('depth-advice');
+
+      if(type === 'drill' || type === 'tap') {
+        adviceBox.innerHTML = `📌 <b>鑽/攻建議：</b> 垂直加工，注意冷凝水與排屑。鑽深超過 ${d*3}mm (3D) 時，建議採用啄鑽 (G83) 避免斷刀。`;
+        return;
+      }
+
+      let apRatio = 0.5;
+      let aeRatio = 0.2;
+
+      if(mat === 'alu') { apRatio = 1.0; aeRatio = 0.5; }
+      else if(mat === 'inox' || mat === 'ti') { apRatio = 0.3; aeRatio = 0.15; }
+
+      const recAp = (d * apRatio).toFixed(1);
+      const recAe = (d * aeRatio).toFixed(1);
+
+      adviceBox.innerHTML = `📌 <b>粗加工建議 (參考)：</b><br>` +
+        `• <b>下刀深度 (ap)：</b> 約 ${recAp} mm (刀徑的 ${apRatio} 倍)<br>` +
+        `• <b>吃刀寬度 (ae)：</b> 約 ${recAe} mm (刀徑的 ${aeRatio} 倍)<br>` +
+        `<span style="font-size:0.85rem; color:#64748b;">(白話：硬料下刀要淺、吃刀要薄，才不會崩刃咬死；鋁合金可加深)</span>`;
+    }
+
+    // 下拉選單連動預設刀具
+    function populatePresetDropdown() {
+      const select = document.getElementById('preset-tool');
+      select.innerHTML = '<option value="">-- 手動輸入或選擇常用刀具 --</option>';
+      toolDatabase.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.innerText = `[${getTypeName(t.type)}] ${t.name} (D${t.d})`;
+        select.appendChild(opt);
+      });
+    }
+
+    function applyPresetTool() {
+      const id = parseInt(document.getElementById('preset-tool').value);
+      const tool = toolDatabase.find(t => t.id === id);
+      if(!tool) return;
+
+      document.getElementById('tool-d').value = tool.d;
+      document.getElementById('tool-z').value = tool.z;
+      document.getElementById('tool-vc').value = tool.vc;
+      document.getElementById('tool-f').value = tool.f;
+
+      if(tool.type === 'endmill' || tool.type === 'facemill') {
+        document.getElementById('proc-type').value = 'mill';
+      } else if(tool.type === 'drill') {
+        document.getElementById('proc-type').value = 'drill';
+      } else if(tool.type === 'tap') {
+        document.getElementById('proc-type').value = 'tap';
+      }
+
+      onProcChange();
+    }
+
+    // 渲染刀具庫清單
+    function renderToolList() {
+      const filter = document.getElementById('lib-filter').value;
+      const listContainer = document.getElementById('tool-list');
+      listContainer.innerHTML = '';
+
+      const filtered = filter === 'all' ? toolDatabase : toolDatabase.filter(t => t.type === filter);
+
+      if(filtered.length === 0) {
+        listContainer.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:20px;">尚無相關刀具資料</div>';
+        return;
+      }
+
+      // 依直徑由小到大排序
+      filtered.sort((a,b) => a.d - b.d);
+
+      filtered.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'tool-item';
+        item.innerHTML = `
+          <div class="tool-header">
+            <span>${t.name}</span>
+            <span style="font-size:0.85rem; color:#2563eb;">D${t.d} / ${t.z}刃</span>
+          </div>
+          <div class="tool-detail">
+            <b>類型：</b>${getTypeName(t.type)} | <b>建議Vc：</b>${t.vc} m/min | <b>進給f：</b>${t.f} mm<br>
+            <b>切深參考：</b> ap: ${t.ap || '未設'} / ae: ${t.ae || '未設'}
+          </div>
+          <div style="text-align:right; margin-top:8px;">
+            <button style="padding:3px 8px; font-size:0.8rem;" onclick="deleteTool(${t.id})">刪除</button>
+          </div>
+        `;
+        listContainer.appendChild(item);
+      });
+    }
+
+    function getTypeName(type) {
+      const map = { endmill: "端銑刀", facemill: "面銑刀", drill: "鑽頭", tap: "絲攻" };
+      return map[type] || "刀具";
+    }
+
+    function showAddToolForm() {
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.getElementById('add-view').classList.add('active');
+    }
+
+    function saveNewTool() {
+      const name = document.getElementById('new-name').value;
+      const type = document.getElementById('new-type').value;
+      const d = parseFloat(document.getElementById('new-d').value);
+      const z = parseInt(document.getElementById('new-z').value) || 1;
+      const vc = parseFloat(document.getElementById('new-vc').value) || 100;
+      const f = parseFloat(document.getElementById('new-f').value) || 0.05;
+      const ap = document.getElementById('new-ap').value || '--';
+      const ae = document.getElementById('new-ae').value || '--';
+
+      if(!name || !d) {
+        alert("請輸入完整的刀具名稱與直徑！");
+        return;
+      }
+
+      const newTool = { id: Date.now(), name, type, d, z, vc, f, ap, ae };
+      toolDatabase.push(newTool);
+      saveToStorage();
+
+      // 清空表單
+      document.getElementById('new-name').value = '';
+      document.getElementById('new-d').value = '';
+
+      alert("刀具已成功建檔！");
+      switchTab('library-view');
+    }
+
+    function deleteTool(id) {
+      if(confirm("確定要刪除這把刀具嗎？(此動作將會更新部門共用資料)")) {
+        toolDatabase = toolDatabase.filter(t => t.id !== id);
+        saveToStorage();
+        renderToolList();
+      }
+    }
+
+    // 初始化頁面
+    window.onload = function() {
+      populatePresetDropdown();
+      calculate();
+    };
+  </script>
+</body>
+</html>
